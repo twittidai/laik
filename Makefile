@@ -9,7 +9,7 @@ SUBDIRS=examples
 
 LDFLAGS=$(OPT)
 IFLAGS=-I$(SDIR)include -I$(SDIR)src -I.
-LDLIBS=-ldl
+LDLIBS=-ldl -ldyn_psets
 
 SRCS = $(wildcard $(SDIR)src/*.c)
 ifdef USE_TCP
@@ -53,6 +53,9 @@ src/revinfo.o: git-version.h
 
 src/backend-mpi.o: $(SDIR)src/backend-mpi.c
 	$(MPICC) $(CFLAGS) -c -o src/backend-mpi.o $(SDIR)src/backend-mpi.c
+
+src/backend-mpi-dynamic.o: $(SDIR)src/backend-mpi-dynamic.c
+	$(MPICC) $(CFLAGS) -c -o src/backend-mpi-dynamic.o $(SDIR)src/backend-mpi-dynamic.c
 
 $(LAIKLIB): $(OBJS)
 	$(MPICC) $(CFLAGS) -shared -o $(abspath $(LAIKLIB)) $(OBJS) $(LDLIBS)

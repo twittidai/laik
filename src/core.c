@@ -57,6 +57,15 @@ Laik_Instance* laik_init(int* argc, char*** argv)
     }
 #endif
 
+#ifdef USE_MPI_DYN
+    if (inst == 0) {
+        // default to MPI if available, or if explicitly wanted
+        if ((override == 0) || (strcmp(override, "mpi_dyn") == 0)) {
+            inst = laik_init_mpi_dyn(argc, argv);
+        }
+    }
+#endif
+
 #ifdef USE_TCP2
     if (inst == 0) {
         if ((override == 0) || (strcmp(override, "tcp2") == 0)) {
