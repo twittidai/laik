@@ -328,7 +328,7 @@ Laik_Instance* laik_init_mpi_dyn(int* argc, char*** argv)
     // - not have to worry about conflicting use of MPI_COMM_WORLD by application
     // - install error handler which passes errors through - we want them
     MPI_Comm ownworld;
-    err = MPI_Comm_dup(MPI_COMM_WORLD, &ownworld);
+    err = MPI_Comm_dup(dyn_pset_state->mpicomm, &ownworld);
     if (err != MPI_SUCCESS) laik_mpi_panic(err);
     err = MPI_Comm_set_errhandler(ownworld, MPI_ERRORS_RETURN);
     if (err != MPI_SUCCESS) laik_mpi_panic(err);
@@ -401,6 +401,7 @@ void laik_mpi_finalize_dyn(Laik_Instance* inst)
 
     if (mpiData(mpi_instance)->didInit) {
         //int err = MPI_Session_finalize(&session_handle);
+        MPI_Comm_disconnect(&(mpiData(mpi_instance)->comm));
         dyn_pset_finalize(&dyn_pset_state, NULL);
         //if (err != MPI_SUCCESS) laik_mpi_panic(err);
     }
