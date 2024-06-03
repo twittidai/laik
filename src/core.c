@@ -18,6 +18,7 @@
 
 #include <laik-internal.h>
 #include <laik-backend-mpi.h>
+#include <laik-backend-mpi-dynamic.h>
 #include <laik-backend-single.h>
 #include <laik-backend-tcp.h>
 #include <laik-backend-tcp2.h>
