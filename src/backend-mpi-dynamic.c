@@ -320,7 +320,7 @@ Laik_Instance* laik_init_mpi_dyn(int* argc, char*** argv)
         // err = MPI_Session_init(MPI_INFO_NULL, MPI_ERRORS_ARE_FATAL, &session_handle);
         if (err != MPI_SUCCESS) laik_mpi_panic(err);
         bool b = false;
-        dyn_pset_config(dyn_pset_state, "garbage_colection", &b);
+        dyn_pset_config(dyn_pset_state, "garbage_collection", &b);
         d->didInit = true;
     }
 
