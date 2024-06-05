@@ -316,7 +316,7 @@ Laik_Instance* laik_init_mpi_dyn(int* argc, char*** argv)
 
     // eventually initialize MPI first before accessing MPI_COMM_WORLD
     if (argc) {
-        dyn_pset_state = dyn_pset_init("mpi:\\world", NULL, MPI_INFO_NULL, NULL, NULL, NULL, NULL);
+        dyn_pset_state = dyn_pset_init("mpi://WORLD", NULL, MPI_INFO_NULL, NULL, NULL, NULL, NULL);
         // err = MPI_Session_init(MPI_INFO_NULL, MPI_ERRORS_ARE_FATAL, &session_handle);
         if (err != MPI_SUCCESS) laik_mpi_panic(err);
         bool b = false;
