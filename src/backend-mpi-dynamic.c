@@ -14,9 +14,9 @@
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
+#define USE_MPI_DYN
 
-
-//#ifdef USE_MPI
+#ifdef USE_MPI_DYN
 
 #include "laik-internal.h"
 #include "laik-backend-mpi-dynamic.h"
@@ -412,8 +412,11 @@ Laik_Group* mpi_resize_dyn(Laik_ResizeRequests* rr)
 {
     // any previous resize must be finished
     assert(mpi_instance->world && (mpi_instance->world->parent == 0));
+    // create MPI_Group from communicator of the current world
     MPI_Group old_world, new_world;
-    MPI_Comm_group(mpi_instance->world->backend_data->comm, &old_world);
+    MPIGroupData* gd = (MPIGroupData*) mpi_instance->world->backend_data;
+    MPI_Comm_group(gd->comm, &old_world);
+
 
     Laik_Group* w = mpi_instance->world;
     int terminate, reconfigured;
@@ -422,18 +425,22 @@ Laik_Group* mpi_resize_dyn(Laik_ResizeRequests* rr)
         return w;
     }
 
-    MPI_Comm ownworld;
-    int err = MPI_Comm_dup(dyn_pset_state->mpicomm, &ownworld);
-    if (err != MPI_SUCCESS) laik_mpi_panic(err);
-
-    MPI_Comm_group(mpi_instance->world->backend_data->comm, &new_world);
-    
-    int new_world_size;
+    // create MPI_Group from communicator from the adapt function
+    MPI_Comm resized_world;
+    int err = MPI_Comm_dup(dyn_pset_state->mpicomm, &resized_world);
+    if (err != MPI_SUCCESS) laik_mpi_panic(err); 
+    MPI_Comm_group(&resized_world, &new_world);
+    int new_world_size, old_world_size;
     MPI_Group_size(new_world, &new_world_size);
+    MPI_Group_size(old_world, &old_world_size);
     
+    // Create new LAIK group for the resized world
     Laik_Group* g = laik_create_group(mpi_instance, new_world_size);
+    MPIGroupData* ownworld = malloc(sizeof(MPIGroupData));
+    ownworld->comm = resized_world;
     g->backend_data = ownworld;
     mpi_instance->backend_data = ownworld;
+
     g->parent = w; 
     int* ranks = (int *)malloc( new_world_size * sizeof(int) );
     int* newranks = (int *)malloc( new_world_size * sizeof(int) );
@@ -441,41 +448,19 @@ Laik_Group* mpi_resize_dyn(Laik_ResizeRequests* rr)
     MPI_Group_translate_ranks(old_world, new_world_size, ranks, new_world, ranks);
 
     int i1 = 0, i2 = 0; // i1: index in parent, i2: new process index
-    for(int lid = 0; lid <= rr->size; lid++) {
-        switch(rr->req[lid].state) {
-        case PS_Dead: break;
-        case PS_Ready:
-            // both in old and new group
-            assert(w->locationid[i1] == lid);
-            g->locationid[i2] = lid;
-            g->toParent[i2] = i1;
-            g->fromParent[i1] = i2;
-            i1++;
-            i2++;
-            break;
-        case PS_NoConnect:
-            // new registered
-            d->peer[lid].state = PS_Ready;
-            g->locationid[i2] = lid;
-            g->toParent[i2] = -1; // did not exist before
-            i2++;
-            break;
-        case PS_InResizeRemove: // other process
-        case PS_ReadyRemove:
-            // marked for removal
-            d->peer[lid].state = PS_ReadyRemove;
-            assert(w->locationid[i1] == lid);
-            g->fromParent[i1] = -1; // does not exist in new group
-            i1++;
-            break;
-        default:
-            assert(0);
-        }
+    for(int lid = 0; lid < new_world_size; lid++) {
+        int oldid = ranks[lid];
+        if (oldid < 0) continue;
+        g->locationid[i2] = lid;
+        g->toParent[i2] = oldid;
+        g->fromParent[oldid] = i2;
+        i1++;
+        i2++;
     }
     assert(w->size == i1);
     g->size = i2;
     g->myid = g->fromParent[w->myid];
-    mpi_instance->locations = d->maxid + 1;
+    mpi_instance->locations = old_world_size + 1; // could be different?
 }
 
 // update backend specific data for group if needed
@@ -1272,4 +1257,4 @@ static void laik_mpi_sync(Laik_KVStore* kvs)
 }
 
 
-//#endif // USE_MPI
+#endif // USE_MPI
