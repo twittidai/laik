@@ -14,7 +14,6 @@
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-#define USE_MPI_DYN
 
 #ifdef USE_MPI_DYN
 
@@ -466,7 +465,7 @@ Laik_Group* mpi_resize_dyn(Laik_ResizeRequests* rr)
     int i1 = 0, i2 = 0; // i1: index in parent, i2: new process index
     for(int lid = 0; lid < new_world_size; lid++) {
         int oldid = ranks[lid];
-        if (oldid < 0) continue;
+        if (oldid == MPI_UNDEFINED) continue;
         g->locationid[i2] = lid;
         g->toParent[i2] = oldid;
         g->fromParent[oldid] = i2;
