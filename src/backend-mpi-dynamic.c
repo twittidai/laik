@@ -356,12 +356,28 @@ Laik_Instance* laik_init_mpi_dyn(int* argc, char*** argv)
 
     // initial world group
     Laik_Group* world = laik_create_group(inst, size);
-    world->size = size;
-    world->myid = rank; // same as location ID of this process
-    world->backend_data = gd;
-    // initial location IDs are the MPI ranks
-    for(int i = 0; i < size; i++)
-        world->locationid[i] = i;
+    if (rank == 0) { //TODO: this is not the way to check if the process has newly joined
+        world->size = size;
+        world->myid = rank; // same as location ID of this process
+        world->backend_data = gd;
+        // initial location IDs are the MPI ranks
+        for(int i = 0; i < size; i++)
+            world->locationid[i] = i;   
+    }
+    else {
+        Laik_Group* parent = laik_create_group(inst, size); // size is probably smaller
+        parent->size = size;
+        parent->myid = -1; // not in parent group
+        int parentID = 0, worldID = 0;
+        for(int lid = 0; lid <= size; lid++) {
+            world->locationid[worldID] = lid;
+            world->toParent[worldID] = -1;
+            worldID++;
+
+        }
+        assert(worldID == world->size);
+        world->parent = parent;
+    }
     // attach world to instance
     inst->world = world;
 
