@@ -439,6 +439,9 @@ Laik_Group* mpi_resize_dyn(Laik_ResizeRequests* rr)
     if (!reconfigured) {
         return w;
     }
+    if (terminate) {
+        return NULL;
+    }
 
     // create MPI_Group from communicator from the adapt function
     MPI_Comm resized_world;
@@ -460,22 +463,22 @@ Laik_Group* mpi_resize_dyn(Laik_ResizeRequests* rr)
     int* ranks = (int *)malloc( new_world_size * sizeof(int) );
     int* newranks = (int *)malloc( new_world_size * sizeof(int) );
     for (int i=0; i<new_world_size; i++) ranks[i] = i;   
-    MPI_Group_translate_ranks(old_world, new_world_size, ranks, new_world, ranks);
+    MPI_Group_translate_ranks(old_world, new_world_size, ranks, new_world, newranks);
 
     int i1 = 0, i2 = 0; // i1: index in parent, i2: new process index
     for(int lid = 0; lid < new_world_size; lid++) {
         int oldid = ranks[lid];
-        if (oldid == MPI_UNDEFINED) continue;
+        int newid = newranks[lid];
+        if (newId == MPI_UNDEFINED) continue;
         g->locationid[i2] = lid;
-        g->toParent[i2] = oldid;
-        g->fromParent[oldid] = i2;
-        i1++;
+        g->toParent[newid] = oldid;
+        g->fromParent[oldid] = newid;
         i2++;
     }
-    assert(w->size == i1);
+    //assert(w->size == i1);
     g->size = i2;
     g->myid = g->fromParent[w->myid];
-    mpi_instance->locations = old_world_size + 1; // could be different?
+    mpi_instance->locations = (new_world_size > old_world_size ? old_world_size + 1 : mpi_instance->locations); 
 }
 
 // update backend specific data for group if needed
