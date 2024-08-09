@@ -367,7 +367,8 @@ void laik_set_world(Laik_Instance* i, Laik_Group* newworld)
     i->epoch++;
 }
 
-// create a clone of <g>, derived from <g>.
+// create a clone of <g>, derived from <g>
+// helper for laik_new_shrinked_group, does not call into backend to track new group
 Laik_Group* laik_clone_group(Laik_Group* g)
 {
     Laik_Group* g2 = laik_create_group(g->inst, g->size);
@@ -472,6 +473,10 @@ Laik_Group* laik_new_union_group(Laik_Group* g1, Laik_Group* g2)
         }
     }
 
+    // allow the backend to track the new created group g
+    if (g->inst->backend->updateGroup)
+        (g->inst->backend->updateGroup)(g);
+
     if (laik_log_begin(1)) {
         laik_log_append("union group of %d (size %d, myid %d) + %d (size %d, myid %d)",
                         g1->gid, g1->size, g1->myid, g2->gid, g2->size, g2->myid);
@@ -517,6 +522,7 @@ Laik_Group* laik_new_shrinked_group(Laik_Group* g, int len, int* list)
     g2->size = o;
     g2->myid = (g->myid < 0) ? -1 : g2->fromParent[g->myid];
 
+    // allow the backend to track the new created group g2
     if (g->inst->backend->updateGroup)
         (g->inst->backend->updateGroup)(g2);
 
