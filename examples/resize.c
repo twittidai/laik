@@ -27,10 +27,17 @@
 int main(int argc, char* argv[])
 {
     Laik_Instance* inst = laik_init(&argc, &argv);
+    volatile int i = 0;
+    char hostname[256];
+    gethostname(hostname, sizeof(hostname));
+    printf("PID %d on %s ready for attach\n", getpid(), hostname);
+    fflush(stdout);
+    while (0 == i)
+        sleep(5);
     int phase = laik_phase(inst);
 
     int max = 0;
-    if (argc > 1) max = atoi(argv[1]);
+    if (argc > 1) max = atoi(argv[1]);  
     if (max == 0) max = 10;
 
     Laik_Group *world = laik_world(inst);
