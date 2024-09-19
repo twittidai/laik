@@ -22,18 +22,20 @@
 
 #include "laik.h"
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 
 int main(int argc, char* argv[])
 {
-    Laik_Instance* inst = laik_init(&argc, &argv);
     volatile int i = 0;
     char hostname[256];
     gethostname(hostname, sizeof(hostname));
     printf("PID %d on %s ready for attach\n", getpid(), hostname);
     fflush(stdout);
-    while (0 == i)
-        sleep(5);
+    // while (0 == i && strcmp(hostname, "n1") == 0)
+    //     sleep(5);
+
+    Laik_Instance* inst = laik_init(&argc, &argv);
     int phase = laik_phase(inst);
 
     int max = 0;
@@ -56,7 +58,8 @@ int main(int argc, char* argv[])
 
         if (laik_myid(world) < 0) break;
     }
-
+    printf("PID %d on %s finalizing\n", getpid(), hostname);
     laik_finalize(inst);
+    printf("PID %d on %s finished\n", getpid(), hostname);
     return 0;
 }
