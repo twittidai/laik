@@ -320,8 +320,6 @@ Laik_Instance* laik_init_mpi_dyn(int* argc, char*** argv)
         MPI_Info_create(&info);
         MPI_Info_set(info, "mpi_num_procs_add", "1");
         dyn_pset_state = dyn_pset_init("mpi://WORLD", NULL, info, NULL, NULL, NULL, NULL);
-        // err = MPI_Session_init(MPI_INFO_NULL, MPI_ERRORS_ARE_FATAL, &session_handle);
-        if (err != MPI_SUCCESS) laik_mpi_panic(err);
         bool b = false;
         dyn_pset_config(dyn_pset_state, "garbage_collection", &b);
         d->didInit = true;
@@ -359,33 +357,42 @@ Laik_Instance* laik_init_mpi_dyn(int* argc, char*** argv)
 
     // initial world group
     Laik_Group* world = laik_create_group(inst, size);
-    if (!dyn_pset_state->is_dynamic) {
+    if (!dyn_pset_state->is_dynamic) { // process part of the initial world
         world->size = size;
         world->myid = rank; // same as location ID of this process
-        world->backend_data = d;
+        world->backend_data = d; // TODO: check if this should be gd
         // initial location IDs are the MPI ranks
-        for(int i = 0; i < size; i++)
-            world->locationid[i] = i;   
+        for(int i = 0; i < size; i++) {
+            world->locationid[i] = i;
+            world->fromParent[i] = -1;
+        }
     }
-    else {
+    else { // newcoming process
+        // find the parent group through set operations
         MPI_Group parent_mpi, temp_union, current;
-        MPI_Comm_group(dyn_pset_state->mpicomm, &current);
-        MPI_Group_union(current, dyn_pset_state->group_sub, &temp_union);
-        MPI_Group_difference(temp_union, dyn_pset_state->group_add, &parent_mpi);
+        err = MPI_Comm_group(dyn_pset_state->mpicomm, &current);
+        if (err != MPI_SUCCESS) laik_mpi_panic(err);
+        err = MPI_Group_union(current, dyn_pset_state->group_sub, &temp_union);
+        if (err != MPI_SUCCESS) laik_mpi_panic(err);
+        err = MPI_Group_difference(temp_union, dyn_pset_state->group_add, &parent_mpi);
+        if (err != MPI_SUCCESS) laik_mpi_panic(err);
 
         world->size = size;
         world->myid = rank; // same as location ID of this process
-        world->backend_data = d;
+        world->backend_data = d; // TODO: check if this should be gd
 
         // adjust phase and epoch
         int curr_epoch, curr_phase;
-        MPI_Recv(&curr_epoch, 1, MPI_INT, 0, 0, ownworld, MPI_STATUS_IGNORE);
-        MPI_Recv(&curr_phase, 1, MPI_INT, 0, 1, ownworld, MPI_STATUS_IGNORE);
+        err = MPI_Recv(&curr_epoch, 1, MPI_INT, 0, 0, ownworld, MPI_STATUS_IGNORE);
+        if (err != MPI_SUCCESS) laik_mpi_panic(err);
+        err = MPI_Recv(&curr_phase, 1, MPI_INT, 0, 1, ownworld, MPI_STATUS_IGNORE);
+        if (err != MPI_SUCCESS) laik_mpi_panic(err);
         inst->epoch = curr_epoch;
         inst->phase = curr_phase;
 
         Laik_Group* parent = laik_create_group(inst, size);
-        MPI_Group_size(parent_mpi, &(parent->size));
+        err = MPI_Group_size(parent_mpi, &(parent->size));
+        if (err != MPI_SUCCESS) laik_mpi_panic(err);
         parent->myid = -1; // not in parent group
         int parentID = 0, worldID = 0;
         for(int lid = 0; lid <= size; lid++) {
@@ -393,13 +400,19 @@ Laik_Instance* laik_init_mpi_dyn(int* argc, char*** argv)
             world->toParent[worldID] = -1;
             worldID++;
         }
-        printf("Newly created process:\n");
-        for (int i = 0; i < parent->size; i++) {
-            printf("locationid[%d] = %d\n", i, world->locationid[i]);       
-            printf("toParent[%d] = %d\n", i, world->toParent[i]);
-            //printf("fromParent[%d] = %d\n", i, g->fromParent[i]);
+        if (laik_log_begin(LAIK_LL_Debug)) {
+            laik_log_append("MPI dyn backend: new process %d/%d, parent group size %d",
+                            rank, size, parent->size);
+            laik_log_append(" => parent group: %d (size %d, myid %d)",
+                            parent->gid, parent->size, parent->myid);
+            laik_log_append("\n  location IDs: ");
+            laik_log_IntList(size, world->locationid);
+            laik_log_append("\n  toParent (in world): ");
+            laik_log_IntList(size, world->toParent);
+            laik_log_append("\n  fromParent (in world): ");
+            laik_log_IntList(size, world->fromParent);
+            laik_log_flush(0);
         }
-        printf("\n");
         //assert(worldID == world->size);
         world->parent = parent;
     }
@@ -408,7 +421,7 @@ Laik_Instance* laik_init_mpi_dyn(int* argc, char*** argv)
 
     sprintf(inst->guid, "%d", rank);
 
-    laik_log(2, "MPI backend initialized (at '%s', rank %d/%d)\n",
+    laik_log(LAIK_LL_Info, "MPI dyn backend initialized (at '%s', rank %d/%d)\n",
              inst->mylocation, rank, size);
 
     // do own reduce algorithm?
@@ -439,16 +452,17 @@ static
 void laik_mpi_finalize_dyn(Laik_Instance* inst)
 {
     assert(inst == mpi_instance);
-
-    printf("Value of didInit: %d\n", mpiData(inst)->didInit);
+    laik_log(LAIK_LL_Debug, "MPI dyn backend finalize: group: %d, myid: %d => didInit: %d",
+             inst->world->gid, inst->world->myid, mpiData(inst)->didInit);
 
     if (mpiData(inst)->didInit) {
         //int err = MPI_Session_finalize(&session_handle);
-        printf("Finalizing MPI\n");
-        MPI_Comm_disconnect(&(mpiData(inst)->comm));
-        dyn_pset_finalize(&dyn_pset_state, NULL);
-        printf("Finalizing MPI\n");
-        //if (err != MPI_SUCCESS) laik_mpi_panic(err);
+        int err = MPI_Comm_disconnect(&(mpiData(inst)->comm));
+        if (err != MPI_SUCCESS) laik_mpi_panic(err);
+        err = dyn_pset_finalize(&dyn_pset_state, NULL);
+        if (err) {
+            laik_panic("ERROR: MPI dyn backend: dyn_pset_finalize failed");
+        }
     }
 }
 
@@ -526,7 +540,6 @@ Laik_Group* laik_resize_dyn(Laik_ResizeRequests* rr)
     g->backend_data = ownworld;
     mpi_instance->backend_data = ownworld; // TODO: check if necessary
     g->parent = w;
-    g->gid = w->gid + 1;
 
     // translate existing ranks from old world to new world 
     int* ranks = (int *)malloc(new_world_size * sizeof(int));
@@ -544,16 +557,40 @@ Laik_Group* laik_resize_dyn(Laik_ResizeRequests* rr)
     for(int lid = 0; lid < old_world_size; lid++) {
         int oldid = ranks[lid];
         int newid = newranks[lid];
-        if (newid == MPI_UNDEFINED || newid == MPI_PROC_NULL) continue;
+        // skip processes that are not part of the new world
+        if (newid == MPI_UNDEFINED || newid == MPI_PROC_NULL) 
+            continue;
         g->locationid[i2] = lid;
         g->toParent[newid] = oldid;
         g->fromParent[oldid] = newid;
         i2++;
     }
-    //assert(w->size == i1);
+
+    // log the resulting assignments
+    if (laik_log_begin(LAIK_LL_Debug)) {
+        laik_log_append("MPI dyn backend ranks: parent %d (size %d) => group %d (size %d)",
+                        w->gid, w->size, g->gid, g->size);
+        laik_log_append("\nMPI dyn backend ranks: myid %d => myid %d",
+                        w->myid, g->myid);
+        laik_log_append("\nMPI dyn backend ranks: in myid %d: ", g->myid);
+        laik_log_append("\nlocationid: ");
+        laik_log_IntList(new_world_size, g->locationid);
+        laik_log_append("\nfromParent: ");
+        laik_log_IntList(new_world_size, g->fromParent);
+        laik_log_append("\ntoParent: ");
+        laik_log_IntList(new_world_size, g->toParent);
+        laik_log_flush(NULL);
+    }
+
     g->size = i2;
     g->myid = terminate ? -1 : g->fromParent[w->myid];
     mpi_instance->locations = (new_world_size > old_world_size ? old_world_size + 1 : mpi_instance->locations); 
+
+    // cleanup
+    free(ranks);
+    free(newranks);
+    MPI_Group_free(&old_world);
+    MPI_Group_free(&new_world);
 
     return g;
 }
