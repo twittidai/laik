@@ -84,7 +84,7 @@ Laik_Group* laik_world(Laik_Instance* i);
 /**
  * Notify LAIK that the application will not use the given group any longer.
  * This allows to free group resources if no process and neither LAIK internally
- * needs the group anymore (all LAIK objects depending on the group are removed)
+ * needs the group anymore (all LAIK objects depending on the group are removed).
  */
 void laik_release_group(Laik_Group* g);
 

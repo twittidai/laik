@@ -144,6 +144,8 @@ int main(int argc, char* argv[])
                                    LAIK_DF_None, LAIK_RO_None);
         laik_free_partitioning(pWriteOld);
         laik_free_partitioning(pReadOld);
+
+        laik_finish_world_resize(inst);
     }
     laik_partitioning_set_name(pWrite, "pWrite");
     laik_partitioning_set_name(pRead, "pRead");
@@ -286,6 +288,8 @@ int main(int argc, char* argv[])
                 laik_free_partitioning(pRead);
                 pWrite = pWriteNew;
                 pRead = pReadNew;
+
+                laik_finish_world_resize(inst);
 
                 // exit if we got removed from world
                 if (laik_myid(world) < 0) {
