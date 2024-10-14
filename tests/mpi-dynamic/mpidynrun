@@ -1,0 +1,39 @@
+#!/bin/bash
+
+trap 'jobs -p | xargs -r kill' SIGINT SIGTERM
+
+procs=1
+add=0
+remove=0
+hosts="localhost" # default host
+debug=0
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        -n) procs="$2"; shift ;;
+        -a) add="$2"; shift ;;
+        -r) remove="$2"; shift ;;
+        -d) debug=1 ;;
+        -H) hosts="$2"; shift ;;
+        -h) echo "Usage: $0 [-n <procs>] [-a <# add>] [-r <# remove>] [-d debug] [-H <hosts>]"; exit 1 ;;
+        -*) echo "Unknown parameter passed: $1"; exit 1 ;;
+        *) break;;
+    esac
+    shift
+done
+
+if [ -z "$1" ]; then
+    echo "Error: no command given"
+    exit 1
+fi
+
+if [ $debug -eq 1 ]; then
+    LAIK_LOG="1"
+else
+    LAIK_LOG=
+fi
+
+export LAIK_BACKEND=mpi_dyn
+export LAIK_NUM_PROCS_ADD=$add
+export LAIK_NUM_PROCS_REMOVE=$remove
+mpirun -x LAIK_BACKEND -x LAIK_NUM_PROCS_ADD -x LAIK_NUM_PROCS_REMOVE -x LAIK_LOG --map-by node -n $procs -H $hosts $@
+wait

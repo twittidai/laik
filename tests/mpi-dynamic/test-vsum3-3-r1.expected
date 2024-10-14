@@ -1,0 +1,7 @@
+Phase 0, Epoch 0, Proc 0/3: sum of 3333 values at 0 - 3332 : 5552778
+Phase 0, Epoch 0, Proc 1/3: sum of 3334 values at 3333 - 6666 : 16668333
+Phase 0, Epoch 0, Proc 2/3: sum of 3333 values at 6667 - 9999 : 27773889
+Phase 0: total sum: 49995000
+Phase 1, Epoch 1, Proc 0/2: sum of 5000 values at 0 - 4999 : 12497500
+Phase 1, Epoch 1, Proc 1/2: sum of 5000 values at 5000 - 9999 : 37497500
+Phase 1: total sum: 49995000

@@ -1,0 +1,8 @@
+Phase 0, Epoch 0, Proc 0/2: sum of 5000 values at 0 - 4999 : 12497500
+Phase 0, Epoch 0, Proc 1/2: sum of 5000 values at 5000 - 9999 : 37497500
+Phase 0: total sum: 49995000
+Phase 1, Epoch 1, Proc 0/4: sum of 2500 values at 0 - 2499 : 3123750
+Phase 1, Epoch 1, Proc 1/4: sum of 2500 values at 2500 - 4999 : 9373750
+Phase 1, Epoch 1, Proc 2/4: sum of 2500 values at 5000 - 7499 : 15623750
+Phase 1, Epoch 1, Proc 3/4: sum of 2500 values at 7500 - 9999 : 21873750
+Phase 1: total sum: 49995000
