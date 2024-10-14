@@ -370,26 +370,27 @@ Laik_Instance* laik_init_mpi_dyn(int* argc, char*** argv)
     if (!dyn_pset_state->is_dynamic) { // process part of the initial world
         world->size = size;
         world->myid = rank; // same as location ID of this process
-        world->backend_data = d; // TODO: check if this should be gd
+        world->backend_data = gd;
         // initial location IDs are the MPI ranks
         for(int i = 0; i < size; i++) {
             world->locationid[i] = i;
-            world->fromParent[i] = -1;
         }
     }
     else { // newcoming process
         // find the parent group through set operations
         MPI_Group parent_mpi, temp_union, current;
+        int parent_size;
         err = MPI_Comm_group(dyn_pset_state->mpicomm, &current);
         if (err != MPI_SUCCESS) laik_mpi_panic(err);
         err = MPI_Group_union(current, dyn_pset_state->group_sub, &temp_union);
         if (err != MPI_SUCCESS) laik_mpi_panic(err);
         err = MPI_Group_difference(temp_union, dyn_pset_state->group_add, &parent_mpi);
         if (err != MPI_SUCCESS) laik_mpi_panic(err);
+        err = MPI_Group_size(parent_mpi, &parent_size);
+        if (err != MPI_SUCCESS) laik_mpi_panic(err);
 
         world->size = size;
-        world->myid = rank; // same as location ID of this process
-        world->backend_data = d; // TODO: check if this should be gd
+        world->backend_data = gd; 
 
         // adjust phase and epoch
         int curr_epoch, curr_phase;
@@ -400,15 +401,50 @@ Laik_Instance* laik_init_mpi_dyn(int* argc, char*** argv)
         inst->epoch = curr_epoch;
         inst->phase = curr_phase;
 
-        Laik_Group* parent = laik_create_group(inst, size);
-        err = MPI_Group_size(parent_mpi, &(parent->size));
-        if (err != MPI_SUCCESS) laik_mpi_panic(err);
+        // create & adjust the parent group
+        Laik_Group* parent = laik_create_group(inst, parent_size);
         parent->myid = -1; // not in parent group
-        int parentID = 0, worldID = 0;
-        for(int lid = 0; lid <= size; lid++) {
-            world->locationid[worldID] = lid;
-            world->toParent[worldID] = -1;
-            worldID++;
+
+        // translate ranks for old world + added processes
+        int* old_ranks = (int *)malloc(parent_size * sizeof(int));
+        int* new_ranks = (int *)malloc(parent_size * sizeof(int));
+        for (int i = 0; i < parent_size; i++) old_ranks[i] = i;
+        err = MPI_Group_translate_ranks(parent_mpi, parent_size, old_ranks, current, new_ranks);
+        if (err != MPI_SUCCESS) laik_mpi_panic(err);
+
+        // assign location IDs and parent relations
+        // first handle the processes in the old world
+        for (int i = 0; i < parent_size; i++) { 
+            if (new_ranks[i] == MPI_UNDEFINED) {
+                // only in old group, left process
+                parent->locationid[old_ranks[i]] = i;
+                world->fromParent[old_ranks[i]] = -1;
+                continue;
+            }
+            // process both in new and old world
+            parent->locationid[old_ranks[i]] = i;
+            world->locationid[new_ranks[i]] = i;
+            world->toParent[new_ranks[i]] = old_ranks[i];
+            world->fromParent[old_ranks[i]] = new_ranks[i];
+        }
+        // then handle newcoming processes
+        int group_add_size;
+        err = MPI_Group_size(dyn_pset_state->group_add, &group_add_size);
+        if (err != MPI_SUCCESS) laik_mpi_panic(err);
+        if (group_add_size > 0) { // which should be true at this point
+            int* incoming_ranks = (int *)malloc(group_add_size * sizeof(int));
+            int* incoming_ranks_new = (int *)malloc(group_add_size * sizeof(int));
+            for (int i = 0; i < group_add_size; i++) incoming_ranks[i] = i;
+            err = MPI_Group_translate_ranks(dyn_pset_state->group_add, group_add_size, incoming_ranks,
+                current, incoming_ranks_new);
+            if (err != MPI_SUCCESS) laik_mpi_panic(err);
+            for (int i = 0; i < size - parent_size; i++) {
+                assert(incoming_ranks_new[i] != MPI_UNDEFINED);
+                world->locationid[incoming_ranks_new[i]] = parent_size + i;
+                world->toParent[incoming_ranks_new[i]] = -1;
+            }
+            free(incoming_ranks);
+            free(incoming_ranks_new);
         }
         if (laik_log_begin(LAIK_LL_Debug)) {
             laik_log_append("MPI dyn backend: new process %d/%d, parent group size %d",
@@ -423,7 +459,6 @@ Laik_Instance* laik_init_mpi_dyn(int* argc, char*** argv)
             laik_log_IntList(size, world->fromParent);
             laik_log_flush(0);
         }
-        //assert(worldID == world->size);
         world->parent = parent;
     }
     // attach world to instance
@@ -484,7 +519,7 @@ Laik_Group* laik_resize_dyn(Laik_ResizeRequests* rr)
     int mpi_err;
 
     // create MPI_Group from communicator of the current world
-    MPI_Group old_world, new_world;
+    MPI_Group old_world, new_world, add_world; // add_world is old_world U dyn_pset_state->group_add
     MPI_Comm old_comm = mpiGroupData(mpi_instance->world)->comm;
     mpi_err = MPI_Comm_group(old_comm, &old_world);
     if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err);
@@ -493,17 +528,35 @@ Laik_Group* laik_resize_dyn(Laik_ResizeRequests* rr)
     int terminate, reconfigured;
     laik_log(LAIK_LL_Debug, "MPI dyn backend dyn_pset_adapt_nb: group: %d, myid: %d",
              w->gid, w->myid);
-    // FIX: dyn_pset_state->mpicomm may not be alive at this stage
     dyn_pset_adapt_nb(dyn_pset_state, &terminate, &reconfigured);
     laik_log(LAIK_LL_Debug, "MPI dyn backend dyn_pset_adapt_nb return: group: %d, myid: %d"
              "=> terminate: %d, reconfigured: %d", w->gid, w->myid, terminate, reconfigured);
+    // can terminate directly if there is no configuration change
     if (!reconfigured) {
         return w;
     }
+
+    // make a union of the old world group and the added processes
+    mpi_err = MPI_Group_union(old_world, dyn_pset_state->group_add, &add_world);
+    if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err);
+    mpi_err = MPI_Group_difference(add_world, dyn_pset_state->group_sub, &new_world);
+    if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err);
+
+    // store the old world size and new world size
+    int new_world_size, old_world_size;
+    mpi_err = MPI_Group_size(new_world, &new_world_size);
+    if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err);
+    mpi_err = MPI_Group_size(old_world, &old_world_size);
+    if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err);
+    int maxsize = (old_world_size > new_world_size ? old_world_size : new_world_size);
+
     if (terminate) {
-        Laik_Group* g = laik_create_group(mpi_instance, 1);
-        g->myid = -1;
+        // leaving process, create a group with new world size
+        Laik_Group* g = laik_create_group(mpi_instance, maxsize);
+        g->myid = -1; // indicating termination
         g->parent = w;
+
+        // process not part of any new communicator, set current backend data to NULL
         MPIData* d = malloc(sizeof(MPIData));
         d->comm = MPI_COMM_NULL;
         d->didInit = false;
@@ -511,6 +564,65 @@ Laik_Group* laik_resize_dyn(Laik_ResizeRequests* rr)
         gd->comm = MPI_COMM_NULL;
         g->backend_data = gd;
         mpi_instance->backend_data = d;
+        
+        // translate ranks for old world + added processes    
+        int* old_ranks = (int *)malloc(old_world_size * sizeof(int));
+        int* new_ranks = (int *)malloc(old_world_size * sizeof(int));
+        for (int i = 0; i < old_world_size; i++) old_ranks[i] = i;
+        mpi_err = MPI_Group_translate_ranks(old_world, old_world_size, old_ranks, new_world, new_ranks);
+        if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err);
+        if (laik_log_begin(LAIK_LL_Debug)) {
+            laik_log_append("MPI dyn backend: translate ranks");
+            laik_log_append("\n  old ranks: ");
+            laik_log_IntList(old_world_size, old_ranks);
+            laik_log_append("\n  new ranks: ");
+            laik_log_IntList(old_world_size, new_ranks);
+            laik_log_flush(0);
+        }
+
+        // assign location IDs and parent relations
+        // first handle the processes in the old world
+        for (int i = 0; i < old_world_size; i++) { 
+            if (new_ranks[i] == MPI_UNDEFINED) {
+                // leaving process
+                assert(w->locationid[old_ranks[i]] == i);
+                g->fromParent[old_ranks[i]] = -1;
+                continue;
+            }
+            // process both in new and old world
+            g->fromParent[old_ranks[i]] = new_ranks[i];
+            g->toParent[new_ranks[i]] = old_ranks[i];
+            g->locationid[new_ranks[i]] = i; 
+        }
+        // then handle newcoming processes
+        int group_add_size;
+        mpi_err = MPI_Group_size(dyn_pset_state->group_add, &group_add_size);
+        if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err);
+        if (group_add_size > 0) {
+            int* incoming_ranks = (int *)malloc(group_add_size * sizeof(int));
+            int* incoming_ranks_new = (int *)malloc(group_add_size * sizeof(int));
+            for (int i = 0; i < group_add_size; i++) incoming_ranks[i] = i;
+            mpi_err = MPI_Group_translate_ranks(dyn_pset_state->group_add, group_add_size, incoming_ranks,
+                new_world, incoming_ranks_new);
+            if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err);
+            for (int i = 0; i < new_world_size - old_world_size; i++) {
+                assert(incoming_ranks_new[i] != MPI_UNDEFINED);
+                g->locationid[incoming_ranks_new[i]] = old_world_size + i;
+                g->toParent[incoming_ranks_new[i]] = -1;
+            }
+            free(incoming_ranks);
+            free(incoming_ranks_new);
+        }
+
+        g->size = new_world_size;
+        mpi_instance->locations = (old_world_size > new_world_size ? old_world_size : new_world_size);
+
+        // cleanup
+        free(old_ranks);
+        free(new_ranks);
+        MPI_Group_free(&old_world);
+        MPI_Group_free(&new_world);
+        MPI_Group_free(&add_world);  
         return g;
     }
 
@@ -519,13 +631,6 @@ Laik_Group* laik_resize_dyn(Laik_ResizeRequests* rr)
     mpi_err = MPI_Comm_dup(dyn_pset_state->mpicomm, &resized_world);
     if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err); 
     mpi_err = MPI_Comm_group(resized_world, &new_world);
-    if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err);
-
-    // store the old world size and new world size
-    int new_world_size, old_world_size;
-    mpi_err = MPI_Group_size(new_world, &new_world_size);
-    if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err);
-    mpi_err = MPI_Group_size(old_world, &old_world_size);
     if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err);
     
     // send the epoch and phase to the newly created processes
@@ -557,44 +662,68 @@ Laik_Group* laik_resize_dyn(Laik_ResizeRequests* rr)
     }
 
     // Create new LAIK group for the resized world & update the backend data
-    Laik_Group* g = laik_create_group(mpi_instance, new_world_size);
+    Laik_Group* g = laik_create_group(mpi_instance, maxsize);
     MPIData* ownworld = malloc(sizeof(MPIData));
     MPIGroupData* ownworld_gd = malloc(sizeof(MPIGroupData));
     ownworld->comm = resized_world;
     ownworld_gd->comm = resized_world;
     ownworld->didInit = true;
     g->backend_data = ownworld_gd;
-    mpi_instance->backend_data = ownworld; // TODO: check if necessary
+    mpi_instance->backend_data = ownworld;
     g->parent = w;
 
-    // translate existing ranks from old world to new world 
-    int* ranks = (int *)malloc(new_world_size * sizeof(int));
-    int* newranks = (int *)malloc(new_world_size * sizeof(int));
-    int i = 0;
-    for (; i<old_world_size; i++) ranks[i] = i;
-    if (new_world_size > old_world_size) {
-        for (; i<new_world_size; i++) ranks[i] = MPI_PROC_NULL;   
-    }
-    mpi_err = MPI_Group_translate_ranks(old_world, new_world_size, 
-        ranks, new_world, newranks);
+    // translate ranks for old world + added processes     
+    int* old_ranks = (int *)malloc(old_world_size * sizeof(int));
+    int* new_ranks = (int *)malloc(old_world_size * sizeof(int));
+    for (int i = 0; i < old_world_size; i++) old_ranks[i] = i;
+    mpi_err = MPI_Group_translate_ranks(old_world, old_world_size, old_ranks, new_world, new_ranks);
     if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err);
+    if (laik_log_begin(LAIK_LL_Debug)) {
+        laik_log_append("MPI dyn backend: translate ranks");
+        laik_log_append("\n  old ranks: ");
+        laik_log_IntList(old_world_size, old_ranks);
+        laik_log_append("\n  new ranks: ");
+        laik_log_IntList(old_world_size, new_ranks);
+        laik_log_flush(0);
+    }
 
-    int i1 = 0, i2 = 0; // i1: index in parent, i2: new process index
-    for(int lid = 0; lid < old_world_size; lid++) {
-        int oldid = ranks[lid];
-        int newid = newranks[lid];
-        // skip processes that are not part of the new world
-        if (newid == MPI_UNDEFINED || newid == MPI_PROC_NULL) 
+    // assign location IDs and parent relations
+    // first handle the processes in the old world
+    for (int i = 0; i < old_world_size; i++) { 
+        if (new_ranks[i] == MPI_UNDEFINED) {
+            // leaving process
+            assert(w->locationid[old_ranks[i]] == i);
+            g->fromParent[old_ranks[i]] = -1;
             continue;
-        g->locationid[i2] = lid;
-        g->toParent[newid] = oldid;
-        g->fromParent[oldid] = newid;
-        i2++;
+        }
+        // process both in new and old world
+        g->fromParent[old_ranks[i]] = new_ranks[i];
+        g->toParent[new_ranks[i]] = old_ranks[i];
+        g->locationid[new_ranks[i]] = i; 
+    }
+    // then handle newcoming processes
+    mpi_err = MPI_Group_size(dyn_pset_state->group_add, &group_add_size);
+    if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err);
+    if (group_add_size > 0) {
+        laik_log(LAIK_LL_Debug, "MPI dyn backend: newcoming processes");
+        int* incoming_ranks = (int *)malloc(group_add_size * sizeof(int));
+        int* incoming_ranks_new = (int *)malloc(group_add_size * sizeof(int));
+        for (int i = 0; i < group_add_size; i++) incoming_ranks[i] = i;
+        mpi_err = MPI_Group_translate_ranks(dyn_pset_state->group_add, group_add_size, incoming_ranks,
+            new_world, incoming_ranks_new);
+        if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err);
+        for (int i = 0; i < new_world_size - old_world_size; i++) {
+            assert(incoming_ranks_new[i] != MPI_UNDEFINED);
+            g->locationid[incoming_ranks_new[i]] = old_world_size + i;
+            g->toParent[incoming_ranks_new[i]] = -1;
+        }
+        free(incoming_ranks);
+        free(incoming_ranks_new);
     }
 
     g->size = new_world_size;
-    g->myid = terminate ? -1 : rank;
-    mpi_instance->locations = (new_world_size > old_world_size ? old_world_size + 1 : mpi_instance->locations);
+    g->myid = g->fromParent[w->myid];
+    mpi_instance->locations = (new_world_size > old_world_size ? new_world_size : old_world_size);
 
     // log the resulting assignments
     if (laik_log_begin(LAIK_LL_Debug)) {
@@ -613,10 +742,11 @@ Laik_Group* laik_resize_dyn(Laik_ResizeRequests* rr)
     } 
 
     // cleanup
-    free(ranks);
-    free(newranks);
+    free(old_ranks);
+    free(new_ranks);
     MPI_Group_free(&old_world);
     MPI_Group_free(&new_world);
+    MPI_Group_free(&add_world);
 
     return g;
 }
