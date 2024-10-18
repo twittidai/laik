@@ -60,6 +60,8 @@ static Laik_Backend laik_backend_mpi_dynamic = {
 static Laik_Instance* mpi_instance = 0;
 static MPI_Session session_handle = MPI_SESSION_NULL;
 static dyn_pset_state_t *dyn_pset_state = NULL;
+static int num_procs_add_i = 0;
+static int num_procs_remove_i = 0;
 
 typedef struct {
     MPI_Comm comm;
@@ -322,16 +324,22 @@ Laik_Instance* laik_init_mpi_dyn(int* argc, char*** argv)
         MPI_Info_create(&info);
         const char* num_procs_add = getenv("LAIK_NUM_PROCS_ADD");
         const char* num_procs_remove = getenv("LAIK_NUM_PROCS_REMOVE");
+        num_procs_add_i = num_procs_add ? atoi(num_procs_add) : 0;
+        num_procs_remove_i = num_procs_remove ? atoi(num_procs_remove) : 0;
         laik_log(LAIK_LL_Info, "MPI dynamic backend: num_procs_add %s, num_procs_remove %s",
                  num_procs_add ? num_procs_add : "none",
                  num_procs_remove ? num_procs_remove : "none");
-        if (num_procs_add != NULL) {
+        if (num_procs_add != NULL && num_procs_add_i > 0) {
             MPI_Info_set(info, "mpi_num_procs_add", num_procs_add);
         }
-        if (num_procs_remove != NULL) {
+        if (num_procs_remove != NULL && num_procs_remove_i > 0) {
             MPI_Info_set(info, "mpi_num_procs_sub", num_procs_remove);
         }
+        // dyn_pset_set_output(NULL, 10);
         dyn_pset_state = dyn_pset_init("mpi://WORLD", NULL, info, NULL, NULL, NULL, NULL);
+        if (dyn_pset_state == NULL) {
+            laik_panic("ERROR: MPI dyn backend: dyn_pset_init failed");
+        }
         bool b = false;
         dyn_pset_config(dyn_pset_state, "garbage_collection", &b);
         d->didInit = true;
@@ -404,6 +412,10 @@ Laik_Instance* laik_init_mpi_dyn(int* argc, char*** argv)
         // create & adjust the parent group
         Laik_Group* parent = laik_create_group(inst, parent_size);
         parent->myid = -1; // not in parent group
+        MPIGroupData* parent_gd = malloc(sizeof(MPIGroupData));
+        parent_gd->comm = MPI_COMM_NULL;
+        parent->backend_data = parent_gd;
+        parent->size = parent_size;
 
         // translate ranks for old world + added processes
         int* old_ranks = (int *)malloc(parent_size * sizeof(int));
@@ -442,6 +454,7 @@ Laik_Instance* laik_init_mpi_dyn(int* argc, char*** argv)
                 assert(incoming_ranks_new[i] != MPI_UNDEFINED);
                 world->locationid[incoming_ranks_new[i]] = parent_size + i;
                 world->toParent[incoming_ranks_new[i]] = -1;
+                world->fromParent[parent_size + i] = -1;
             }
             free(incoming_ranks);
             free(incoming_ranks_new);
@@ -460,6 +473,7 @@ Laik_Instance* laik_init_mpi_dyn(int* argc, char*** argv)
             laik_log_flush(0);
         }
         world->parent = parent;
+        world->myid = rank;
     }
     // attach world to instance
     inst->world = world;
@@ -506,6 +520,9 @@ void laik_mpi_finalize_dyn(Laik_Instance* inst)
         if (err != MPI_SUCCESS) laik_mpi_panic(err);
     }
     err = dyn_pset_finalize(&dyn_pset_state, NULL);
+    if (dyn_pset_state != NULL) {
+        laik_panic("ERROR: MPI dyn backend: dyn_pset_finalize failed");
+    }
     if (err) {
         laik_panic("ERROR: MPI dyn backend: dyn_pset_finalize failed");
     }
@@ -528,6 +545,7 @@ Laik_Group* laik_resize_dyn(Laik_ResizeRequests* rr)
     int terminate, reconfigured;
     laik_log(LAIK_LL_Debug, "MPI dyn backend dyn_pset_adapt_nb: group: %d, myid: %d",
              w->gid, w->myid);
+    // dyn_pset_set_output(NULL, 10);
     dyn_pset_adapt_nb(dyn_pset_state, &terminate, &reconfigured);
     laik_log(LAIK_LL_Debug, "MPI dyn backend dyn_pset_adapt_nb return: group: %d, myid: %d"
              "=> terminate: %d, reconfigured: %d", w->gid, w->myid, terminate, reconfigured);
@@ -632,12 +650,19 @@ Laik_Group* laik_resize_dyn(Laik_ResizeRequests* rr)
     if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err); 
     mpi_err = MPI_Comm_group(resized_world, &new_world);
     if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err);
-    
+
+    if (num_procs_add_i > 0 && num_procs_add_i < 4) {
+        num_procs_add_i = num_procs_add_i * 2;
+    }
+    if (num_procs_remove_i <= 4 && num_procs_remove_i > 1) {
+        num_procs_remove_i -= num_procs_remove_i / 2;
+    }
+        
     // send the epoch and phase to the newly created processes
     int rank;
     mpi_err = MPI_Comm_rank(resized_world, &rank);
     if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err);
-    int curr_epoch = mpi_instance->epoch;
+    int curr_epoch = mpi_instance->epoch + 1;
     int curr_phase = mpi_instance->phase;
     int group_add_size;
     mpi_err = MPI_Group_size(dyn_pset_state->group_add, &group_add_size);
@@ -716,13 +741,14 @@ Laik_Group* laik_resize_dyn(Laik_ResizeRequests* rr)
             assert(incoming_ranks_new[i] != MPI_UNDEFINED);
             g->locationid[incoming_ranks_new[i]] = old_world_size + i;
             g->toParent[incoming_ranks_new[i]] = -1;
+            g->fromParent[old_world_size + i] = -1;
         }
         free(incoming_ranks);
         free(incoming_ranks_new);
     }
 
     g->size = new_world_size;
-    g->myid = g->fromParent[w->myid];
+    g->myid = rank;
     mpi_instance->locations = (new_world_size > old_world_size ? new_world_size : old_world_size);
 
     // log the resulting assignments
@@ -753,16 +779,18 @@ Laik_Group* laik_resize_dyn(Laik_ResizeRequests* rr)
 
 static
 void laik_finish_resize_dyn() {
-    // disconnect from the communicator of the parent
+    // disconnect from the communicator of the parent if it exists
     MPIGroupData* gd;
     gd = mpiGroupData(mpi_instance->world->parent);
-    laik_log(LAIK_LL_Debug, "MPI dyn backend finish_resize: group: %d, myid: %d",
-             mpi_instance->world->gid, mpi_instance->world->myid);
-    int mpi_err = MPI_Comm_disconnect(&(gd->comm));
-    if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err);
-    laik_log(LAIK_LL_Debug, "MPI dyn backend finish_resize: group: %d, myid: %d => disconnected",
-             mpi_instance->world->gid, mpi_instance->world->myid);
-    gd->comm = MPI_COMM_NULL;
+    if (gd && gd->comm != MPI_COMM_NULL) {
+        laik_log(LAIK_LL_Debug, "MPI dyn backend finish_resize: group: %d, myid: %d",
+                    mpi_instance->world->gid, mpi_instance->world->myid);
+        int mpi_err = MPI_Comm_disconnect(&(gd->comm));
+        if (mpi_err != MPI_SUCCESS) laik_mpi_panic(mpi_err);
+        laik_log(LAIK_LL_Debug, "MPI dyn backend finish_resize: group: %d, myid: %d => disconnected",
+                    mpi_instance->world->gid, mpi_instance->world->myid);
+        gd->comm = MPI_COMM_NULL;
+    }
     if (mpi_instance->world->myid < 0)
         dyn_pset_state->mpicomm = MPI_COMM_NULL;
 }
